@@ -90,10 +90,10 @@ All exports are Markdown files in `Exports/`.
 
 ## Show a list in any note
 
-Add a `reading-pile` code block:
+Add an `in-the-margins` code block:
 
 ````markdown
-```reading-pile
+```in-the-margins
 show: suggestions
 ```
 ````
@@ -150,7 +150,7 @@ The plugin connects to [Open Library](https://openlibrary.org) only when you sea
 **Manual install:**
 
 1. Download `main.js`, `manifest.json` and `styles.css` from the latest release.
-2. Put them in `<your vault>/.obsidian/plugins/reading-pile/`.
+2. Put them in `<your vault>/.obsidian/plugins/in-the-margins/`.
 3. In Obsidian, open **Settings → Community plugins** and turn on **In the Margins**.
 
 **With BRAT:** add `jenniferlynparsons/in-the-margins` as a beta plugin.

@@ -11,7 +11,7 @@ const {
   MarkdownRenderChild, normalizePath, requestUrl, setIcon, debounce,
 } = obsidian;
 
-const VIEW_TYPE = 'reading-pile-view';
+const VIEW_TYPE = 'in-the-margins-view';
 const STATUS_LABEL = { reading: 'Reading', queued: 'Queue', finished: 'Finished', 'set aside': 'Set aside' };
 const USEFUL_LABEL = { 1: 'Some value', 2: 'Useful', 3: 'Deeply useful' };
 
@@ -183,8 +183,8 @@ function sectionRange(content, heading) {
   const m = new RegExp(`^##[ \\t]+${escapeRe(heading)}[ \\t]*$`, 'im').exec(content || '');
   if (!m) return null;
   const start = m.index + m[0].length;
-  // The section ends at the next heading or at the reading-pile block.
-  const next = /^(#{1,2}\s|```reading-pile)/m.exec(content.slice(start));
+  // The section ends at the next heading or at the plugin's code block.
+  const next = /^(#{1,2}\s|```(?:in-the-margins|reading-pile))/m.exec(content.slice(start));
   const end = next ? start + next.index : content.length;
   return { start, end, text: content.slice(start, end) };
 }
@@ -194,7 +194,7 @@ function getWhy(content) {
   return r ? r.text.trim() : '';
 }
 
-/** Write the Why section. A missing section goes above the reading-pile block (or the first ## heading). */
+/** Write the Why section. A missing section goes above the plugin's code block (or the first ## heading). */
 function setWhy(content, text) {
   text = (text || '').trim();
   const r = sectionRange(content, WHY_HEADING);
@@ -204,7 +204,7 @@ function setWhy(content, text) {
   }
   if (!text) return content;
   const block = `## ${WHY_HEADING}\n\n${text}\n\n`;
-  const anchor = /^```reading-pile/m.exec(content) || /^##\s/m.exec(content);
+  const anchor = /^```(?:in-the-margins|reading-pile)/m.exec(content) || /^##\s/m.exec(content);
   if (anchor) return content.slice(0, anchor.index) + block + content.slice(anchor.index);
   return `${content.replace(/\s*$/, '')}\n\n${block}`;
 }
@@ -270,12 +270,12 @@ function buildBookNote({ title, author, cover, link, topics, useful, date, start
     'ended:', '---', '');
   if (cover) lines.push(`![cover|160](${cover})`, '');
   lines.push(`## ${WHY_HEADING}`, '', ...(why && why.trim() ? [why.trim(), ''] : ['']));
-  lines.push('```reading-pile', 'show: connected', '```', '', '## Notes', '', '');
+  lines.push('```in-the-margins', 'show: connected', '```', '', '## Notes', '', '');
   return lines.join('\n');
 }
 
 function buildTopicNote(name) {
-  return ['---', 'type: topic', '---', '', '```reading-pile', 'show: topic', '```', '',
+  return ['---', 'type: topic', '---', '', '```in-the-margins', 'show: topic', '```', '',
     '## Notes', '', `What ${name} means to me, and what I'm looking for in these books.`, ''].join('\n');
 }
 
@@ -572,18 +572,18 @@ function buildCanvas(books, topicPaths, settings, today) {
 /* Plugin                                                             */
 /* ------------------------------------------------------------------ */
 
-class ReadingPilePlugin extends Plugin {
+class InTheMarginsPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
     this.registerView(VIEW_TYPE, (leaf) => new PileView(leaf, this));
     this.addRibbonIcon('library', 'Open In the Margins', () => this.activateView());
 
-    this.registerMarkdownCodeBlockProcessor('reading-pile', (source, el, ctx) => {
-      ctx.addChild(new PileBlock(el, this, source, ctx.sourcePath));
-    });
+    const block = (source, el, ctx) => ctx.addChild(new PileBlock(el, this, source, ctx.sourcePath));
+    this.registerMarkdownCodeBlockProcessor('in-the-margins', block);
+    this.registerMarkdownCodeBlockProcessor('reading-pile', block); // older notes
 
-    this.registerObsidianProtocolHandler('reading-pile', () => this.activateView());
+    this.registerObsidianProtocolHandler('in-the-margins', () => this.activateView());
 
     this.addCommand({ id: 'open-pile', name: 'Open the pile', callback: () => this.activateView() });
     this.addCommand({ id: 'add-book', name: 'Add a book', callback: () => new AddBookModal(this).open() });
@@ -848,11 +848,11 @@ class ReadingPilePlugin extends Plugin {
 /* ------------------------------------------------------------------ */
 
 function renderCover(parent, book, cls) {
-  const wrap = parent.createDiv({ cls: `rp-cover ${cls || ''}` });
+  const wrap = parent.createDiv({ cls: `itm-cover ${cls || ''}` });
   const placeholder = () => {
     wrap.empty();
-    wrap.addClass('rp-cover-blank');
-    wrap.createDiv({ cls: 'rp-cover-title', text: book.title });
+    wrap.addClass('itm-cover-blank');
+    wrap.createDiv({ cls: 'itm-cover-title', text: book.title });
   };
   if (book.cover) {
     const img = wrap.createEl('img', { attr: { src: book.cover, alt: '', loading: 'lazy' } });
@@ -862,9 +862,9 @@ function renderCover(parent, book, cls) {
 }
 
 function renderUseful(parent, plugin, book, opts) {
-  const el = parent.createDiv({ cls: 'rp-useful', attr: { 'aria-label': book.useful ? USEFUL_LABEL[book.useful] : 'How useful?' } });
+  const el = parent.createDiv({ cls: 'itm-useful', attr: { 'aria-label': book.useful ? USEFUL_LABEL[book.useful] : 'How useful?' } });
   for (let i = 1; i <= 3; i++) {
-    const pip = el.createEl('button', { cls: `rp-pip ${i <= book.useful ? 'is-on' : ''}`, attr: { 'aria-label': USEFUL_LABEL[i], title: USEFUL_LABEL[i] } });
+    const pip = el.createEl('button', { cls: `itm-pip ${i <= book.useful ? 'is-on' : ''}`, attr: { 'aria-label': USEFUL_LABEL[i], title: USEFUL_LABEL[i] } });
     pip.addEventListener('click', (e) => {
       e.stopPropagation();
       const n = book.useful === i ? 0 : i;
@@ -912,7 +912,7 @@ class PileView extends ItemView {
     const c = this.contentEl;
     const scroll = c.scrollTop;
     c.empty();
-    c.addClass('rp-view');
+    c.addClass('itm-view');
     const s = this.plugin.settings;
     const today = todayStr();
     this.renderedFor = today;
@@ -923,15 +923,15 @@ class PileView extends ItemView {
     const nDue = states.filter((x) => x === 'due').length;
 
     // Header
-    const head = c.createDiv({ cls: 'rp-head' });
-    const titles = head.createDiv({ cls: 'rp-head-titles' });
+    const head = c.createDiv({ cls: 'itm-head' });
+    const titles = head.createDiv({ cls: 'itm-head-titles' });
     titles.createEl('h2', { text: 'In the Margins' });
-    const summary = titles.createDiv({ cls: 'rp-summary' });
+    const summary = titles.createDiv({ cls: 'itm-summary' });
     summary.createSpan({ text: `${reading.length} reading` });
-    if (nStale) summary.createSpan({ cls: 'rp-sum-stale', text: ` · ${nStale} stale` });
-    if (nDue) summary.createSpan({ cls: 'rp-sum-due', text: ` · ${nDue} due soon` });
+    if (nStale) summary.createSpan({ cls: 'itm-sum-stale', text: ` · ${nStale} stale` });
+    if (nDue) summary.createSpan({ cls: 'itm-sum-due', text: ` · ${nDue} due soon` });
 
-    const actions = head.createDiv({ cls: 'rp-head-actions' });
+    const actions = head.createDiv({ cls: 'itm-head-actions' });
     const addBtn = actions.createEl('button', { cls: 'mod-cta', text: 'Add book' });
     addBtn.addEventListener('click', () => new AddBookModal(this.plugin).open());
     const mapBtn = actions.createEl('button', { attr: { 'aria-label': 'Connections map' } });
@@ -949,11 +949,11 @@ class PileView extends ItemView {
     });
 
     // Tabs
-    const tabs = c.createDiv({ cls: 'rp-tabs' });
+    const tabs = c.createDiv({ cls: 'itm-tabs' });
     const count = (st) => books.filter((b) => b.status === st).length;
     const tabDefs = [['reading', `Reading ${reading.length}`], ['queued', `Queue ${count('queued')}`], ['finished', `Finished ${count('finished')}`], ['set aside', `Set aside ${count('set aside')}`], ['topics', 'Topics']];
     for (const [key, label] of tabDefs) {
-      const t = tabs.createEl('button', { cls: `rp-tab ${this.tab === key ? 'is-active' : ''}`, text: label });
+      const t = tabs.createEl('button', { cls: `itm-tab ${this.tab === key ? 'is-active' : ''}`, text: label });
       t.addEventListener('click', () => { this.tab = key; this.renderNow(); });
     }
 
@@ -970,20 +970,20 @@ class PileView extends ItemView {
     const s = this.plugin.settings;
     const sugg = suggestionsFor(books, s, today);
     if (!sugg.length) return;
-    const box = c.createDiv({ cls: 'rp-suggest' });
-    box.createDiv({ cls: 'rp-section-label', text: 'Pick one of these up next' });
-    const row = box.createDiv({ cls: 'rp-suggest-row' });
+    const box = c.createDiv({ cls: 'itm-suggest' });
+    box.createDiv({ cls: 'itm-section-label', text: 'Pick one of these up next' });
+    const row = box.createDiv({ cls: 'itm-suggest-row' });
     for (const b of sugg) {
       const age = ageOf(b, today);
-      const item = row.createDiv({ cls: `rp-suggest-item rp-${stateOf(age, s)}` });
-      renderCover(item, b, 'rp-cover-sm').addEventListener('click', (e) => openBookLink(this.plugin, b, '', e));
-      const body = item.createDiv({ cls: 'rp-suggest-body' });
-      const a = body.createEl('a', { cls: 'rp-title', text: b.title, href: '#' });
+      const item = row.createDiv({ cls: `itm-suggest-item itm-${stateOf(age, s)}` });
+      renderCover(item, b, 'itm-cover-sm').addEventListener('click', (e) => openBookLink(this.plugin, b, '', e));
+      const body = item.createDiv({ cls: 'itm-suggest-body' });
+      const a = body.createEl('a', { cls: 'itm-title', text: b.title, href: '#' });
       a.addEventListener('click', (e) => { e.preventDefault(); openBookLink(this.plugin, b, '', e); });
-      body.createDiv({ cls: 'rp-age', text: age == null ? 'not touched yet' : `${ageLabel(age)} ago` });
-      const whyEl = body.createDiv({ cls: 'rp-why' });
+      body.createDiv({ cls: 'itm-age', text: age == null ? 'not touched yet' : `${ageLabel(age)} ago` });
+      const whyEl = body.createDiv({ cls: 'itm-why' });
       this.plugin.readWhy(b).then((w) => { if (w) whyEl.setText(w); else whyEl.remove(); });
-      const btn = body.createEl('button', { cls: 'rp-touch', text: 'Touched' });
+      const btn = body.createEl('button', { cls: 'itm-touch', text: 'Touched' });
       btn.addEventListener('click', () => { btn.setText('✓'); this.plugin.touch(b); });
     }
   }
@@ -993,18 +993,18 @@ class PileView extends ItemView {
     // Topic filter
     const topics = [...new Set(list.flatMap((b) => b.topics))].sort((a, b) => a.localeCompare(b));
     if (this.topic && !topics.includes(this.topic)) this.topic = null;
-    const bar = c.createDiv({ cls: 'rp-filterbar' });
+    const bar = c.createDiv({ cls: 'itm-filterbar' });
     if (topics.length) {
-      const chips = bar.createDiv({ cls: 'rp-chips rp-filter' });
+      const chips = bar.createDiv({ cls: 'itm-chips itm-filter' });
       const mk = (label, val) => {
         const n = val ? list.filter((b) => b.topics.includes(val)).length : list.length;
-        const chip = chips.createEl('button', { cls: `rp-chip ${this.topic === val ? 'is-active' : ''}`, text: `${label} ${n}` });
+        const chip = chips.createEl('button', { cls: `itm-chip ${this.topic === val ? 'is-active' : ''}`, text: `${label} ${n}` });
         chip.addEventListener('click', () => { this.topic = val; this.renderNow(); });
       };
       mk('All', null);
       topics.forEach((t) => mk(t, t));
     }
-    const sortSel = bar.createEl('select', { cls: 'dropdown rp-sort' });
+    const sortSel = bar.createEl('select', { cls: 'dropdown itm-sort' });
     const sorts = this.tab === 'reading'
       ? [['stale', 'Longest untouched'], ['title', 'Title'], ['useful', 'Most useful'], ['started', 'Newest first']]
       : this.tab === 'queued'
@@ -1027,7 +1027,7 @@ class PileView extends ItemView {
     shown.sort(cmp);
 
     if (!shown.length) {
-      const empty = c.createDiv({ cls: 'rp-empty' });
+      const empty = c.createDiv({ cls: 'itm-empty' });
       const msg = {
         reading: 'Nothing in the pile yet. Add the books on your nightstand.',
         queued: 'Nothing queued. When you add a book, choose "Queue for later" to save it here.',
@@ -1036,48 +1036,48 @@ class PileView extends ItemView {
       return;
     }
 
-    const grid = c.createDiv({ cls: 'rp-grid' });
+    const grid = c.createDiv({ cls: 'itm-grid' });
     for (const b of shown) this.renderCard(grid, b, today, s);
   }
 
   renderCard(grid, b, today, s) {
     const age = ageOf(b, today);
     const state = b.status === 'reading' ? stateOf(age, s) : b.status === 'queued' ? 'queued' : 'closed';
-    const card = grid.createDiv({ cls: `rp-card rp-${state}` });
+    const card = grid.createDiv({ cls: `itm-card itm-${state}` });
     const cover = renderCover(card, b);
     cover.addEventListener('click', (e) => openBookLink(this.plugin, b, '', e));
     if (b.status === 'reading') {
-      const badge = cover.createDiv({ cls: `rp-badge rp-badge-${state}` });
+      const badge = cover.createDiv({ cls: `itm-badge itm-badge-${state}` });
       badge.setText(state === 'stale' ? (age == null ? 'new' : `${age}d · stale`) : state === 'due' ? `${age}d · due` : ageLabel(age));
     }
-    const body = card.createDiv({ cls: 'rp-card-body' });
-    const a = body.createEl('a', { cls: 'rp-title', text: b.title, href: '#' });
+    const body = card.createDiv({ cls: 'itm-card-body' });
+    const a = body.createEl('a', { cls: 'itm-title', text: b.title, href: '#' });
     a.addEventListener('click', (e) => { e.preventDefault(); openBookLink(this.plugin, b, '', e); });
-    if (b.author) body.createDiv({ cls: 'rp-author', text: b.author });
-    const meta = body.createDiv({ cls: 'rp-meta' });
+    if (b.author) body.createDiv({ cls: 'itm-author', text: b.author });
+    const meta = body.createDiv({ cls: 'itm-meta' });
     renderUseful(meta, this.plugin, b);
     if (b.link) {
-      const l = meta.createEl('a', { cls: 'rp-link', href: b.link, attr: { 'aria-label': `${linkLabel(b.link)} link`, target: '_blank' } });
+      const l = meta.createEl('a', { cls: 'itm-link', href: b.link, attr: { 'aria-label': `${linkLabel(b.link)} link`, target: '_blank' } });
       setIcon(l, 'external-link');
     }
     if (b.topics.length) {
-      const chips = body.createDiv({ cls: 'rp-chips' });
-      for (const t of b.topics) chips.createSpan({ cls: 'rp-chip rp-chip-static', text: t });
+      const chips = body.createDiv({ cls: 'itm-chips' });
+      for (const t of b.topics) chips.createSpan({ cls: 'itm-chip itm-chip-static', text: t });
     }
-    if (b.status !== 'reading' && b.ended) body.createDiv({ cls: 'rp-ended', text: `${STATUS_LABEL[b.status]} ${shortDate(b.ended)}` });
-    if (b.status === 'queued' && b.added) body.createDiv({ cls: 'rp-ended', text: `Queued ${shortDate(b.added)}` });
+    if (b.status !== 'reading' && b.ended) body.createDiv({ cls: 'itm-ended', text: `${STATUS_LABEL[b.status]} ${shortDate(b.ended)}` });
+    if (b.status === 'queued' && b.added) body.createDiv({ cls: 'itm-ended', text: `Queued ${shortDate(b.added)}` });
 
-    const actions = body.createDiv({ cls: 'rp-actions' });
+    const actions = body.createDiv({ cls: 'itm-actions' });
     if (b.status === 'reading') {
       const touched = age === 0;
-      const t = actions.createEl('button', { cls: `rp-touch ${touched ? 'is-done' : 'mod-cta'}`, text: touched ? 'Read today ✓' : 'Touched' });
+      const t = actions.createEl('button', { cls: `itm-touch ${touched ? 'is-done' : 'mod-cta'}`, text: touched ? 'Read today ✓' : 'Touched' });
       t.addEventListener('click', () => { if (!touched) { t.setText('✓'); this.plugin.touch(b); } });
-      const close = actions.createEl('button', { cls: 'rp-close', text: 'Close…' });
+      const close = actions.createEl('button', { cls: 'itm-close', text: 'Close…' });
       close.addEventListener('click', () => new CloseBookModal(this.plugin, b).open());
     } else if (b.status === 'queued') {
       const st = actions.createEl('button', { cls: 'mod-cta', text: 'Start reading' });
       st.addEventListener('click', () => { st.setText('✓'); this.plugin.startReading(b); });
-      const drop = actions.createEl('button', { cls: 'rp-close', text: 'Set aside…' });
+      const drop = actions.createEl('button', { cls: 'itm-close', text: 'Set aside…' });
       drop.addEventListener('click', () => new CloseBookModal(this.plugin, b).open());
     } else {
       const r = actions.createEl('button', { text: 'Back to the pile' });
@@ -1088,10 +1088,10 @@ class PileView extends ItemView {
   renderTopics(c, books) {
     const paths = this.plugin.getTopicPaths();
     const names = this.plugin.getTopicNames();
-    const box = c.createDiv({ cls: 'rp-topics' });
-    box.createEl('p', { cls: 'rp-hint', text: 'Keep this list short. Each topic is a note in your Topics folder, so it can hold your own thoughts about the subject too.' });
+    const box = c.createDiv({ cls: 'itm-topics' });
+    box.createEl('p', { cls: 'itm-hint', text: 'Keep this list short. Each topic is a note in your Topics folder, so it can hold your own thoughts about the subject too.' });
 
-    const add = box.createDiv({ cls: 'rp-topic-add' });
+    const add = box.createDiv({ cls: 'itm-topic-add' });
     const input = add.createEl('input', { type: 'text', attr: { placeholder: 'New topic' } });
     const addBtn = add.createEl('button', { cls: 'mod-cta', text: 'Add' });
     const doAdd = async () => {
@@ -1105,20 +1105,20 @@ class PileView extends ItemView {
     addBtn.addEventListener('click', doAdd);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAdd(); });
 
-    if (!names.length) { box.createDiv({ cls: 'rp-empty', text: 'No topics yet.' }); return; }
-    const list = box.createDiv({ cls: 'rp-topic-list' });
+    if (!names.length) { box.createDiv({ cls: 'itm-empty', text: 'No topics yet.' }); return; }
+    const list = box.createDiv({ cls: 'itm-topic-list' });
     for (const name of names) {
-      const row = list.createDiv({ cls: 'rp-topic-row' });
+      const row = list.createDiv({ cls: 'itm-topic-row' });
       const tagged = books.filter((b) => b.topics.includes(name));
-      const nameEl = row.createEl('a', { cls: 'rp-topic-name', text: name, href: '#' });
+      const nameEl = row.createEl('a', { cls: 'itm-topic-name', text: name, href: '#' });
       nameEl.addEventListener('click', async (e) => {
         e.preventDefault();
         if (paths[name]) this.app.workspace.openLinkText(paths[name], '', 'tab');
         else { await this.plugin.ensureTopicNote(name); this.renderNow(); }
       });
       const reading = tagged.filter((b) => b.status === 'reading').length;
-      row.createSpan({ cls: 'rp-topic-count', text: `${reading} reading · ${tagged.length} total${paths[name] ? '' : ' · no note yet'}` });
-      const btns = row.createDiv({ cls: 'rp-topic-btns' });
+      row.createSpan({ cls: 'itm-topic-count', text: `${reading} reading · ${tagged.length} total${paths[name] ? '' : ' · no note yet'}` });
+      const btns = row.createDiv({ cls: 'itm-topic-btns' });
       const ren = btns.createEl('button', { attr: { 'aria-label': `Rename ${name}` } });
       setIcon(ren, 'pencil');
       ren.addEventListener('click', () => new PromptModal(this.app, `Rename ${name}`, name, async (v) => {
@@ -1136,7 +1136,7 @@ class PileView extends ItemView {
 }
 
 /* ------------------------------------------------------------------ */
-/* Code block: ```reading-pile ... ``` inside notes                    */
+/* Code block: ```in-the-margins ... ``` inside notes                    */
 /* ------------------------------------------------------------------ */
 
 class PileBlock extends MarkdownRenderChild {
@@ -1162,7 +1162,7 @@ class PileBlock extends MarkdownRenderChild {
   renderNow() {
     const el = this.containerEl;
     el.empty();
-    el.addClass('rp-block');
+    el.addClass('itm-block');
     const p = this.plugin, s = p.settings, today = todayStr();
     const books = p.getBooks();
     const show = (this.opts.show || '').toLowerCase();
@@ -1171,11 +1171,11 @@ class PileBlock extends MarkdownRenderChild {
     if (show === 'topic' || this.opts.topic) {
       const topic = this.opts.topic || here;
       const tagged = books.filter((b) => b.topics.includes(topic));
-      if (!tagged.length) { el.createDiv({ cls: 'rp-empty', text: `No books in ${topic} yet.` }); return; }
+      if (!tagged.length) { el.createDiv({ cls: 'itm-empty', text: `No books in ${topic} yet.` }); return; }
       for (const st of ['reading', 'queued', 'finished', 'set aside']) {
         const list = tagged.filter((b) => b.status === st).sort(st === 'reading' ? byStaleness(today) : byTitle);
         if (!list.length) continue;
-        el.createDiv({ cls: 'rp-section-label', text: `${STATUS_LABEL[st]} · ${list.length}` });
+        el.createDiv({ cls: 'itm-section-label', text: `${STATUS_LABEL[st]} · ${list.length}` });
         this.rows(el, list, today);
       }
       return;
@@ -1185,9 +1185,9 @@ class PileBlock extends MarkdownRenderChild {
       const book = books.find((b) => b.path === this.sourcePath);
       if (!book) return;
       const conn = connectedBooks(book, books).slice(0, 8);
-      el.createDiv({ cls: 'rp-section-label', text: 'Connected books' });
+      el.createDiv({ cls: 'itm-section-label', text: 'Connected books' });
       if (!conn.length) {
-        el.createDiv({ cls: 'rp-empty', text: book.topics.length ? 'No other books share these topics yet.' : 'Add topics to see connected books.' });
+        el.createDiv({ cls: 'itm-empty', text: book.topics.length ? 'No other books share these topics yet.' : 'Add topics to see connected books.' });
         return;
       }
       this.rows(el, conn.map((x) => x.book), today, (b) => {
@@ -1199,8 +1199,8 @@ class PileBlock extends MarkdownRenderChild {
 
     if (show === 'suggestions') {
       const sugg = suggestionsFor(books, s, today);
-      el.createDiv({ cls: 'rp-section-label', text: 'Pick one of these up next' });
-      if (!sugg.length) { el.createDiv({ cls: 'rp-empty', text: 'Everything has been touched recently. Nice.' }); return; }
+      el.createDiv({ cls: 'itm-section-label', text: 'Pick one of these up next' });
+      if (!sugg.length) { el.createDiv({ cls: 'itm-empty', text: 'Everything has been touched recently. Nice.' }); return; }
       this.rows(el, sugg, today);
       return;
     }
@@ -1208,12 +1208,12 @@ class PileBlock extends MarkdownRenderChild {
     if (show === 'topics') {
       const paths = p.getTopicPaths();
       const names = p.getTopicNames();
-      if (!names.length) { el.createDiv({ cls: 'rp-empty', text: 'No topics yet.' }); return; }
-      const chips = el.createDiv({ cls: 'rp-chips' });
+      if (!names.length) { el.createDiv({ cls: 'itm-empty', text: 'No topics yet.' }); return; }
+      const chips = el.createDiv({ cls: 'itm-chips' });
       for (const name of names) {
         const tagged = books.filter((b) => b.topics.includes(name));
         const reading = tagged.filter((b) => b.status === 'reading').length;
-        const a = chips.createEl('a', { cls: 'rp-chip internal-link', text: `${name} ${reading}/${tagged.length}`, href: paths[name] || name, attr: { 'data-href': paths[name] || name, title: `${reading} reading, ${tagged.length} total` } });
+        const a = chips.createEl('a', { cls: 'itm-chip internal-link', text: `${name} ${reading}/${tagged.length}`, href: paths[name] || name, attr: { 'data-href': paths[name] || name, title: `${reading} reading, ${tagged.length} total` } });
         a.addEventListener('click', (e) => { e.preventDefault(); p.app.workspace.openLinkText(paths[name] || name, this.sourcePath, false); });
       }
       return;
@@ -1225,36 +1225,36 @@ class PileBlock extends MarkdownRenderChild {
         ? books.filter((b) => b.status === 'reading' && stateOf(ageOf(b, today), s) === 'stale')
         : books.filter((b) => b.status === status);
       list = list.sort(status === 'reading' ? byStaleness(today) : byTitle);
-      if (!list.length) { el.createDiv({ cls: 'rp-empty', text: 'Nothing here yet.' }); return; }
+      if (!list.length) { el.createDiv({ cls: 'itm-empty', text: 'Nothing here yet.' }); return; }
       this.rows(el, list, today);
       return;
     }
-    el.createDiv({ cls: 'rp-empty', text: 'reading-pile: use show: topic, topics, connected, suggestions, reading, queue, stale, finished or set aside.' });
+    el.createDiv({ cls: 'itm-empty', text: 'in-the-margins: use show: topic, topics, connected, suggestions, reading, queue, stale, finished or set aside.' });
   }
 
   rows(el, list, today, note) {
     const s = this.plugin.settings;
-    const wrap = el.createDiv({ cls: 'rp-rows' });
+    const wrap = el.createDiv({ cls: 'itm-rows' });
     for (const b of list) {
       const age = ageOf(b, today);
       const state = b.status === 'reading' ? stateOf(age, s) : b.status === 'queued' ? 'queued' : 'closed';
-      const row = wrap.createDiv({ cls: `rp-row rp-${state}` });
-      renderCover(row, b, 'rp-cover-xs');
-      const body = row.createDiv({ cls: 'rp-row-body' });
-      const a = body.createEl('a', { cls: 'rp-title internal-link', text: b.title, href: b.path, attr: { 'data-href': b.path } });
+      const row = wrap.createDiv({ cls: `itm-row itm-${state}` });
+      renderCover(row, b, 'itm-cover-xs');
+      const body = row.createDiv({ cls: 'itm-row-body' });
+      const a = body.createEl('a', { cls: 'itm-title internal-link', text: b.title, href: b.path, attr: { 'data-href': b.path } });
       a.addEventListener('click', (e) => { e.preventDefault(); openBookLink(this.plugin, b, this.sourcePath, e); });
       const sub = [b.author];
       if (note) sub.push(note(b));
-      body.createDiv({ cls: 'rp-author', text: sub.filter(Boolean).join(' — ') });
+      body.createDiv({ cls: 'itm-author', text: sub.filter(Boolean).join(' — ') });
       if (b.status === 'reading') {
-        row.createSpan({ cls: `rp-badge rp-badge-${state} rp-badge-inline`, text: state === 'fresh' ? ageLabel(age) : (age == null ? 'new' : `${age}d`) });
-        const t = row.createEl('button', { cls: 'rp-touch', text: age === 0 ? '✓' : 'Touched' });
+        row.createSpan({ cls: `itm-badge itm-badge-${state} itm-badge-inline`, text: state === 'fresh' ? ageLabel(age) : (age == null ? 'new' : `${age}d`) });
+        const t = row.createEl('button', { cls: 'itm-touch', text: age === 0 ? '✓' : 'Touched' });
         t.addEventListener('click', () => { if (age !== 0) { t.setText('✓'); this.plugin.touch(b); } });
       } else if (b.status === 'queued') {
-        const st = row.createEl('button', { cls: 'rp-touch', text: 'Start' });
+        const st = row.createEl('button', { cls: 'itm-touch', text: 'Start' });
         st.addEventListener('click', () => { st.setText('✓'); this.plugin.startReading(b); });
       } else if (b.ended) {
-        row.createSpan({ cls: 'rp-ended', text: `${STATUS_LABEL[b.status]} ${shortDate(b.ended)}` });
+        row.createSpan({ cls: 'itm-ended', text: `${STATUS_LABEL[b.status]} ${shortDate(b.ended)}` });
       }
     }
   }
@@ -1285,8 +1285,8 @@ async function searchOpenLibrary(title, author) {
 
 /** Renders a cover search UI into `el`. Calls onPick(result) when a cover is chosen. */
 function coverPicker(el, getQuery, onPick) {
-  const status = el.createDiv({ cls: 'rp-cover-status' });
-  const results = el.createDiv({ cls: 'rp-cover-results' });
+  const status = el.createDiv({ cls: 'itm-cover-status' });
+  const results = el.createDiv({ cls: 'itm-cover-results' });
   return async () => {
     const { title, author } = getQuery();
     if (!title) { status.setText('Enter a title first.'); return; }
@@ -1297,10 +1297,10 @@ function coverPicker(el, getQuery, onPick) {
       if (!found.length) { status.setText('No covers found. You can paste a cover image URL instead.'); return; }
       status.setText('Tap the right cover.');
       for (const r of found) {
-        const b = results.createEl('button', { cls: 'rp-cover-option', attr: { title: `${r.title}${r.author ? ` — ${r.author}` : ''}${r.year ? ` (${r.year})` : ''}` } });
+        const b = results.createEl('button', { cls: 'itm-cover-option', attr: { title: `${r.title}${r.author ? ` — ${r.author}` : ''}${r.year ? ` (${r.year})` : ''}` } });
         b.createEl('img', { attr: { src: r.cover, alt: r.title, loading: 'lazy' } });
         b.addEventListener('click', () => {
-          results.querySelectorAll('.rp-cover-option').forEach((x) => x.removeClass('is-picked'));
+          results.querySelectorAll('.itm-cover-option').forEach((x) => x.removeClass('is-picked'));
           b.addClass('is-picked');
           onPick(r);
         });
@@ -1320,19 +1320,19 @@ class AddBookModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('rp-modal');
+    contentEl.addClass('itm-modal');
     this.titleEl.setText('Add a book');
     const d = this.data;
     let coverInput, authorInput, startedSetting;
 
-    const seg = contentEl.createDiv({ cls: 'rp-segment' });
+    const seg = contentEl.createDiv({ cls: 'itm-segment' });
     const drawSeg = () => {
       seg.empty();
       for (const [st, label] of [['reading', 'Reading now'], ['queued', 'Queue for later']]) {
         const b = seg.createEl('button', { cls: d.status === st ? 'is-active mod-cta' : '', text: label });
         b.addEventListener('click', () => { d.status = st; drawSeg(); });
       }
-      if (startedSetting) startedSetting.settingEl.toggleClass('rp-hidden', d.status === 'queued');
+      if (startedSetting) startedSetting.settingEl.toggleClass('itm-hidden', d.status === 'queued');
     };
     drawSeg();
 
@@ -1351,18 +1351,18 @@ class AddBookModal extends Modal {
 
     // Topics
     const topicSetting = new Setting(contentEl).setName('Topics');
-    topicSetting.settingEl.addClass('rp-setting-block');
-    const chips = contentEl.createDiv({ cls: 'rp-chips rp-topic-pick' });
+    topicSetting.settingEl.addClass('itm-setting-block');
+    const chips = contentEl.createDiv({ cls: 'itm-chips itm-topic-pick' });
     const drawChips = () => {
       chips.empty();
       for (const t of this.plugin.getTopicNames()) {
-        const c = chips.createEl('button', { cls: `rp-chip ${d.topics.includes(t) ? 'is-active' : ''}`, text: t });
+        const c = chips.createEl('button', { cls: `itm-chip ${d.topics.includes(t) ? 'is-active' : ''}`, text: t });
         c.addEventListener('click', () => {
           d.topics = d.topics.includes(t) ? d.topics.filter((x) => x !== t) : [...d.topics, t];
           drawChips();
         });
       }
-      const add = chips.createEl('button', { cls: 'rp-chip rp-chip-add', text: '+ New topic' });
+      const add = chips.createEl('button', { cls: 'itm-chip itm-chip-add', text: '+ New topic' });
       add.addEventListener('click', () => new PromptModal(this.app, 'New topic', '', async (v) => {
         if (!v.trim()) return;
         const name = await this.plugin.ensureTopicNote(v.trim());
@@ -1383,7 +1383,7 @@ class AddBookModal extends Modal {
     // Cover
     const coverSetting = new Setting(contentEl).setName('Cover');
     coverSetting.addText((t) => { coverInput = t; t.setPlaceholder('Image URL, or find one →').onChange((v) => { d.cover = v.trim(); }); });
-    const pickerEl = contentEl.createDiv({ cls: 'rp-cover-picker' });
+    const pickerEl = contentEl.createDiv({ cls: 'itm-cover-picker' });
     const search = coverPicker(pickerEl, () => d, (r) => {
       d.cover = r.cover;
       coverInput.setValue(r.cover);
@@ -1391,8 +1391,8 @@ class AddBookModal extends Modal {
     });
     coverSetting.addButton((b) => b.setButtonText('Find cover').onClick(search));
 
-    contentEl.createDiv({ cls: 'rp-section-label', text: WHY_HEADING });
-    const whyTa = contentEl.createEl('textarea', { cls: 'rp-thoughts rp-why-input', attr: { rows: '3', placeholder: `${WHY_PROMPT} (Optional)` } });
+    contentEl.createDiv({ cls: 'itm-section-label', text: WHY_HEADING });
+    const whyTa = contentEl.createEl('textarea', { cls: 'itm-thoughts itm-why-input', attr: { rows: '3', placeholder: `${WHY_PROMPT} (Optional)` } });
     whyTa.addEventListener('input', () => { d.why = whyTa.value; });
 
     new Setting(contentEl).addButton((b) => b.setButtonText('Add book').setCta().onClick(async () => {
@@ -1410,10 +1410,10 @@ class WhyModal extends Modal {
   constructor(plugin, book) { super(plugin.app); this.plugin = plugin; this.book = book; }
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('rp-modal');
+    contentEl.addClass('itm-modal');
     this.titleEl.setText(`Why ${this.book.title}?`);
-    contentEl.createEl('p', { cls: 'rp-hint', text: WHY_PROMPT });
-    const ta = contentEl.createEl('textarea', { cls: 'rp-thoughts', attr: { rows: '5' } });
+    contentEl.createEl('p', { cls: 'itm-hint', text: WHY_PROMPT });
+    const ta = contentEl.createEl('textarea', { cls: 'itm-thoughts', attr: { rows: '5' } });
     this.plugin.readWhy(this.book).then((w) => { if (w && !ta.value) ta.value = w; });
     window.setTimeout(() => ta.focus(), 50);
     new Setting(contentEl)
@@ -1430,7 +1430,7 @@ class CoverModal extends Modal {
   constructor(plugin, book) { super(plugin.app); this.plugin = plugin; this.book = book; }
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('rp-modal');
+    contentEl.addClass('itm-modal');
     this.titleEl.setText(`Cover for ${this.book.title}`);
     const q = { title: this.book.title, author: this.book.author };
     let picked = null;
@@ -1438,7 +1438,7 @@ class CoverModal extends Modal {
     new Setting(contentEl).setName('Search author').addText((t) => t.setValue(q.author).onChange((v) => { q.author = v.trim(); }));
     let urlInput;
     const s = new Setting(contentEl).setName('Or paste an image URL').addText((t) => { urlInput = t; t.setValue(this.book.cover); });
-    const pickerEl = contentEl.createDiv({ cls: 'rp-cover-picker' });
+    const pickerEl = contentEl.createDiv({ cls: 'itm-cover-picker' });
     const search = coverPicker(pickerEl, () => q, (r) => { picked = r.cover; urlInput.setValue(r.cover); });
     s.addButton((b) => b.setButtonText('Find cover').onClick(search));
     new Setting(contentEl).addButton((b) => b.setButtonText('Save cover').setCta().onClick(async () => {
@@ -1463,10 +1463,10 @@ class CloseBookModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('rp-modal');
+    contentEl.addClass('itm-modal');
     this.titleEl.setText(`Closing out ${this.book.title}`);
 
-    const seg = contentEl.createDiv({ cls: 'rp-segment' });
+    const seg = contentEl.createDiv({ cls: 'itm-segment' });
     const drawSeg = () => {
       seg.empty();
       for (const st of ['finished', 'set aside']) {
@@ -1484,8 +1484,8 @@ class CloseBookModal extends Modal {
     };
     drawUseful();
 
-    contentEl.createDiv({ cls: 'rp-section-label', text: 'Final thoughts' });
-    const ta = contentEl.createEl('textarea', { cls: 'rp-thoughts', attr: { rows: '6', placeholder: 'What stuck with you? What will you carry forward? (Optional)' } });
+    contentEl.createDiv({ cls: 'itm-section-label', text: 'Final thoughts' });
+    const ta = contentEl.createEl('textarea', { cls: 'itm-thoughts', attr: { rows: '6', placeholder: 'What stuck with you? What will you carry forward? (Optional)' } });
     ta.addEventListener('input', () => { this.thoughts = ta.value; });
     window.setTimeout(() => ta.focus(), 50);
 
@@ -1559,8 +1559,8 @@ class PileSettingTab extends PluginSettingTab {
   }
 }
 
-module.exports = ReadingPilePlugin;
-module.exports.default = ReadingPilePlugin;
+module.exports = InTheMarginsPlugin;
+module.exports.default = InTheMarginsPlugin;
 module.exports.helpers = {
   todayStr, toDateStr, daysBetween, stripLink, toList, normStatus, normUseful, bookFromFrontmatter,
   ageOf, stateOf, ageLabel, suggestionsFor, connectedBooks, extractFinalThoughts, appendFinalThoughts, cleanThoughts, getWhy, setWhy,
