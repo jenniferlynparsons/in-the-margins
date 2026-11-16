@@ -1,0 +1,10 @@
+{
+  "id": "reading-pile",
+  "name": "In the Margins",
+  "version": "1.1.0",
+  "minAppVersion": "1.6.0",
+  "description": "Read a big pile of books at once without losing any: one-tap \"touched\", nudges for books going stale, topics, final thoughts, exports and a year-end report.",
+  "author": "Jennifer Lyn Parsons",
+  "isDesktopOnly": false,
+  "authorUrl": "https://github.com/jenniferlynparsons"
+}
