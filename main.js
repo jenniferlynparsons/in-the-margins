@@ -421,6 +421,16 @@ function rMonthCounts(dates) {
   return out;
 }
 
+/** Year-end reports cover a finished year: the default is last year, and the current year waits for January 1. */
+function lastYear() { return String(new Date().getFullYear() - 1); }
+function reportYearProblem(year) {
+  const y = String(year || '').trim();
+  if (!/^\d{4}$/.test(y)) return 'Enter a four-digit year.';
+  const now = new Date().getFullYear();
+  if (Number(y) >= now) return `The ${y} report opens on January 1, ${Number(y) + 1}, once the year is over.`;
+  return '';
+}
+
 function newReport(source, year, title) {
   return {
     schema: REPORT_SCHEMA, source, year: String(year), generated: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })(),
@@ -880,8 +890,9 @@ class InTheMarginsPlugin extends Plugin {
       return this.openFile(f);
     }
     if (kind === 'year') {
-      return new PromptModal(this.app, 'Which year?', String(new Date().getFullYear()), async (year) => {
-        if (!/^\d{4}$/.test(year)) { new Notice('Enter a four-digit year'); return; }
+      return new PromptModal(this.app, 'Year-end report for which year?', lastYear(), async (year) => {
+        year = String(year).trim();
+        { const why = reportYearProblem(year); if (why) { new Notice(why); return; } }
         const thoughts = await this.readThoughts(books);
         const whys = {};
         for (const b of books) if (b.ended && b.ended.startsWith(year)) whys[b.path] = getWhy(await this.app.vault.cachedRead(b.file));
