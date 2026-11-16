@@ -357,28 +357,136 @@ function exportSinceLast(books, thoughts, settings, today) {
   return { markdown: out.join('\n'), keys: fresh.map(closedKey) };
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/* --- year-in-reading report core v1 (shared by In the Margins, Brown Bag, The Stacks and Brainrot) --- */
+/*
+ * Each plugin builds a report object in the year-in-reading/1 shape, then calls
+ * renderReportMarkdown() for the note and JSON.stringify() for the .json file.
+ * The JSON is what the Year in Reading page reads.
+ *
+ * {
+ *   schema: 'year-in-reading/1',
+ *   source: { plugin, name, unit, units },          // unit: 'book' | 'fic' | 'session'
+ *   year: '2026', generated: '2026-12-31', title,
+ *   covers: [{ title, cover }],
+ *   stats: [{ label, value }],                       // "At a glance"
+ *   top: [{ label, name, count, of }],               // "Most read" (heading: topHeading)
+ *   highlights: ['markdown', ...],
+ *   months: { label, values: [12], secondary: { label, values: [12] } | null },
+ *   sections: [{ heading, items: [item] }],
+ *   tables: [{ heading, columns: [...], rows: [[...]] }],
+ * }
+ * item: { title, author, link, linkLabel, cover, date, meta: ['markdown'], fields: [{ label, text }],
+ *         checklist: [{ text, done }], quote, tags: [] }
+ */
+const REPORT_SCHEMA = 'year-in-reading/1';
+const REPORT_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-function htmlAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
-
-/** An <img> tag, so covers show in Obsidian, on GitHub and in most newsletter tools. */
-function coverImg(b, width) {
-  return b.cover ? `<img src="${htmlAttr(b.cover)}" alt="${htmlAttr(`Cover of ${b.title}`)}" width="${width}">` : '';
+function rMd(s) { return String(s == null ? '' : s).replace(/([*_`[\]|])/g, '\\$1'); }
+function rAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+function rImg(title, cover, width) {
+  return cover ? `<img src="${rAttr(cover)}" alt="${rAttr(`Cover of ${title}`)}" width="${width}">` : '';
+}
+function rPlural(n, one, many) { return `${n} ${n === 1 ? one : (many || `${one}s`)}`; }
+function rNum(n) { return typeof n === 'number' ? n.toLocaleString('en-US') : String(n == null ? '' : n); }
+function rOneLine(s) { return String(s || '').replace(/\s*\n+\s*/g, ' ').trim(); }
+function rDate(d) {
+  if (!/^\d{4}-\d\d-\d\d$/.test(d || '')) return d || '';
+  const [y, m, day] = d.split('-').map(Number);
+  return new Date(y, m - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function bar(n, max, width) {
-  if (!n) return '';
-  return '█'.repeat(Math.max(1, Math.round((n / max) * (width || 20))));
+/** Count values → [{ name, count }] sorted by count, then name. */
+function rRank(values) {
+  const m = new Map();
+  for (const v of values) {
+    if (v == null || v === '') continue;
+    const key = String(v).toLowerCase();
+    if (!m.has(key)) m.set(key, { name: String(v), count: 0 });
+    m.get(key).count++;
+  }
+  return [...m.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
-function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || `${one}s`)}`; }
+/** The "Most read" row for one dimension: ties share the top spot. */
+function rTop(label, ranked, of) {
+  if (!ranked.length) return null;
+  const best = ranked.filter((x) => x.count === ranked[0].count);
+  if ((ranked[0].count < 2 && of > 1) || best.length > 3) return null; // no clear favorite
+  return { label, name: best.map((x) => x.name).join(', '), count: ranked[0].count, of };
+}
+
+function rMonthCounts(dates) {
+  const out = new Array(12).fill(0);
+  for (const d of dates) { const m = /^\d{4}-(\d\d)/.exec(d || ''); if (m) out[Number(m[1]) - 1]++; }
+  return out;
+}
+
+function newReport(source, year, title) {
+  return {
+    schema: REPORT_SCHEMA, source, year: String(year), generated: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })(),
+    title, covers: [], stats: [], top: [], highlights: [], months: null, sections: [], tables: [],
+  };
+}
+
+function renderReportMarkdown(r) {
+  const out = [`# ${r.title}`, '', `*Made ${rDate(r.generated)} from ${r.source.name}.*`, ''];
+  const itemCount = r.sections.reduce((n, s) => n + s.items.length, 0);
+  if (!itemCount && !r.stats.length) { out.push(`Nothing logged in ${r.year}.`, ''); return out.join('\n'); }
+  const covers = r.covers.filter((c) => c.cover);
+  if (covers.length) out.push(covers.map((c) => rImg(c.title, c.cover, 72)).join(' '), '');
+
+  if (r.stats.length) {
+    out.push('## At a glance', '', '| | |', '| --- | --- |', ...r.stats.map((s) => `| ${rMd(s.label)} | ${rNum(s.value)} |`), '');
+  }
+  const top = r.top.filter(Boolean);
+  if (top.length) {
+    out.push(`## ${r.topHeading || 'Most read'}`, '', `| | Top | ${r.source.units[0].toUpperCase()}${r.source.units.slice(1)} |`, '| --- | --- | --- |',
+      ...top.map((t) => `| ${rMd(t.label)} | ${rMd(t.name)} | ${t.count} of ${t.of} |`), '');
+  }
+  if (r.highlights.length) out.push('## Highlights', '', ...r.highlights.map((h) => `- ${h}`), '');
+
+  if (r.months && r.months.values.some(Boolean)) {
+    const v = r.months.values, sec = r.months.secondary;
+    const max = Math.max(...v);
+    out.push('## Month by month', '', '```');
+    REPORT_MONTHS.forEach((m, i) => {
+      const bar = v[i] ? '█'.repeat(Math.max(1, Math.round((v[i] / max) * 24))) : '';
+      const extra = sec && sec.values[i] ? `  ${rNum(sec.values[i])} ${sec.label}` : '';
+      out.push(`${m.slice(0, 3)}  ${bar.padEnd(25)}${v[i] || ''}${extra}`.trimEnd());
+    });
+    out.push('```', `*${r.months.label}${sec ? `, with ${sec.label}` : ''}.*`, '');
+  }
+
+  for (const s of r.sections) {
+    if (!s.items.length) continue;
+    out.push(`## ${s.heading}`, '');
+    for (const it of s.items) {
+      out.push(`### ${rMd(it.title)}`, '');
+      if (it.cover) out.push(rImg(it.title, it.cover, 120), '');
+      const meta = [...(it.author ? [`*${rMd(it.author)}*`] : []), ...(it.meta || [])];
+      if (it.link) meta.push(`[${it.linkLabel || 'Link'}](${it.link})`);
+      if (meta.length) out.push(meta.join(' · '), '');
+      for (const f of it.fields || []) if (f.text) out.push(`**${f.label}:** ${rOneLine(f.text)}`, '');
+      if (it.checklist && it.checklist.length) out.push(...it.checklist.map((c) => `- [${c.done ? 'x' : ' '}] ${c.text}`), '');
+      if (it.quote) out.push(String(it.quote).trim().split('\n').map((l) => (l ? `> ${l}` : '>')).join('\n'), '');
+    }
+  }
+  for (const t of r.tables) {
+    if (!t.rows.length) continue;
+    out.push(`## ${t.heading}`, '', `| ${t.columns.join(' | ')} |`, `| ${t.columns.map(() => '---').join(' | ')} |`,
+      ...t.rows.map((row) => `| ${row.map((c) => rMd(rNum(c))).join(' | ')} |`), '');
+  }
+  return out.join('\n');
+}
+/* --- end report core --- */
 
 /**
- * The year-end report: covers, every book finished or set aside with its "why" and
- * final thoughts, and a few numbers about how the year went.
+ * Year-end report data (year-in-reading/1): every book finished or set aside in the
+ * year, with its "why" and final thoughts, plus a few numbers about the year.
  */
-function exportYear(books, thoughts, year, whys) {
+function buildYearReport(books, thoughts, year, whys) {
   whys = whys || {};
+  thoughts = thoughts || {};
   const y = String(year);
   const inYear = (d) => d && d.startsWith(`${y}-`);
   const byEnded = (a, b) => a.ended.localeCompare(b.ended) || byTitle(a, b);
@@ -388,37 +496,32 @@ function exportYear(books, thoughts, year, whys) {
   const started = books.filter((b) => inYear(b.started));
   const still = books.filter((b) => b.status === 'reading' && b.started && b.started <= `${y}-12-31`).sort(byTitle);
   const days = (b) => (b.started && b.ended ? Math.max(0, daysBetween(b.started, b.ended)) : null);
+  const r = newReport({ plugin: 'in-the-margins', name: 'In the Margins', unit: 'book', units: 'books' }, y, `${y} in the margins`);
 
-  const out = [`# ${y} in the margins`, '', `*Made ${niceDate(todayStr())}.*`, ''];
-
-  // Covers
-  const withCovers = finished.filter((b) => b.cover);
-  if (withCovers.length) out.push(withCovers.map((b) => coverImg(b, 80)).join(' '), '');
-
-  // At a glance
+  r.covers = finished.filter((b) => b.cover).map((b) => ({ title: b.title, cover: b.cover }));
   const timed = finished.map(days).filter((d) => d != null);
   const avg = timed.length ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
+  r.stats.push({ label: 'Finished', value: finished.length }, { label: 'Set aside', value: aside.length },
+    { label: 'Started', value: started.length }, { label: "Still reading at year's end", value: still.length });
+  if (avg != null) r.stats.push({ label: 'Average time with a finished book', value: rPlural(avg, 'day') });
   const deep = closed.filter((b) => b.useful === 3).length;
-  out.push('## At a glance', '', '| | |', '| --- | --- |',
-    `| Finished | ${finished.length} |`,
-    `| Set aside | ${aside.length} |`,
-    `| Started | ${started.length} |`,
-    `| Still reading at year's end | ${still.length} |`);
-  if (avg != null) out.push(`| Average time with a finished book | ${plural(avg, 'day')} |`);
-  if (deep) out.push(`| Deeply useful | ${deep} |`);
-  out.push('');
+  if (deep) r.stats.push({ label: 'Deeply useful', value: deep });
 
-  // Highlights
-  const hi = [];
-  const longest = finished.filter((b) => days(b) != null).sort((a, b) => days(b) - days(a))[0];
-  const quickest = finished.filter((b) => days(b) != null).sort((a, b) => days(a) - days(b))[0];
-  if (longest) hi.push(`**Longest companion:** *${md(longest.title)}*, ${plural(days(longest), 'day')} from start to finish.`);
-  if (quickest && quickest !== longest) hi.push(`**Quickest finish:** *${md(quickest.title)}*, in ${plural(days(quickest), 'day')}.`);
+  const topics = rRank(closed.flatMap((b) => b.topics));
+  r.top = [rTop('Topic', topics, closed.length), rTop('Author', rRank(closed.map((b) => b.author)), closed.length),
+    rTop('Usefulness', rRank(closed.map((b) => USEFUL_LABEL[b.useful])), closed.length)].filter(Boolean);
+
+  const hi = r.highlights;
+  const withDays = finished.filter((b) => days(b) != null);
+  const longest = [...withDays].sort((a, b) => days(b) - days(a))[0];
+  const quickest = [...withDays].sort((a, b) => days(a) - days(b))[0];
+  if (longest) hi.push(`**Longest companion:** *${rMd(longest.title)}*, ${rPlural(days(longest), 'day')} from start to finish.`);
+  if (quickest && quickest !== longest) hi.push(`**Quickest finish:** *${rMd(quickest.title)}*, in ${rPlural(days(quickest), 'day')}.`);
   const carried = finished.filter((b) => b.started && !inYear(b.started));
-  if (carried.length) hi.push(`**Carried in from earlier years:** ${carried.length === 1 ? '1 book' : `${carried.length} books`} finished this year ${carried.length === 1 ? 'was' : 'were'} started before ${y}.`);
-  const monthCount = MONTHS.map((_, i) => closed.filter((b) => b.ended.slice(5, 7) === pad(i + 1)).length);
-  const peak = Math.max(...monthCount);
-  if (peak > 1) hi.push(`**Busiest month:** ${MONTHS.map((_, i) => new Date(2000, i, 1).toLocaleDateString('en-US', { month: 'long' })).filter((_, i) => monthCount[i] === peak).join(' and ')}, with ${peak} books closed.`);
+  if (carried.length) hi.push(`**Carried in from earlier years:** ${rPlural(carried.length, 'book')} finished this year ${carried.length === 1 ? 'was' : 'were'} started before ${y}.`);
+  const months = rMonthCounts(closed.map((b) => b.ended));
+  const peak = Math.max(...months);
+  if (peak > 1) hi.push(`**Busiest month:** ${REPORT_MONTHS.filter((_, i) => months[i] === peak).join(' and ')}, with ${peak} books closed.`);
   const topicStats = new Map();
   for (const b of closed) for (const t of b.topics) {
     if (!topicStats.has(t)) topicStats.set(t, { finished: 0, aside: 0, useful: [] });
@@ -430,46 +533,28 @@ function exportYear(books, thoughts, year, whys) {
   const bestTopic = [...topicStats].filter(([, st]) => st.useful.length >= 2).sort((a, b) => avgUse(b[1]) - avgUse(a[1]))[0];
   if (bestTopic) hi.push(`**Most useful topic:** ${bestTopic[0]} (${USEFUL_LABEL[Math.round(avgUse(bestTopic[1]))].toLowerCase()} on average).`);
   const ranked = closed.map((b) => [b, connectedBooks(b, books).length]).sort((a, b) => b[1] - a[1]);
-  if (ranked.length && ranked[0][1] > 1) hi.push(`**Most connected:** *${md(ranked[0][0].title)}* shares topics with ${plural(ranked[0][1], 'other book')}.`);
+  if (ranked.length && ranked[0][1] > 1) hi.push(`**Most connected:** *${rMd(ranked[0][0].title)}* shares topics with ${rPlural(ranked[0][1], 'other book')}.`);
   if (aside.length && closed.length) hi.push(`**Set aside rate:** ${Math.round((aside.length / closed.length) * 100)}% of the books closed this year were set aside. Knowing when to stop counts too.`);
-  if (hi.length) out.push('## Highlights', '', ...hi.map((h) => `- ${h}`), '');
 
-  // Month by month
-  if (closed.length) {
-    out.push('## Month by month', '', '```');
-    MONTHS.forEach((m, i) => out.push(`${m}  ${bar(monthCount[i], peak, 24).padEnd(25)}${monthCount[i] || ''}`));
-    out.push('```', '');
-  }
-
-  const entry = (b) => {
-    const meta = [];
-    if (b.author) meta.push(`*${md(b.author)}*`);
-    meta.push(`${b.status === 'finished' ? 'finished' : 'set aside'} ${shortDate(b.ended)}`);
-    if (days(b) != null) meta.push(plural(days(b), 'day'));
-    if (b.useful) meta.push(USEFUL_LABEL[b.useful]);
-    if (b.topics.length) meta.push(b.topics.join(', '));
-    if (b.link) meta.push(`[${linkLabel(b.link)}](${b.link})`);
-    const lines = [`### ${md(b.title)}`, ''];
-    if (b.cover) lines.push(coverImg(b, 120), '');
-    lines.push(meta.join(' · '), '');
-    if (whys[b.path]) lines.push(`**Why I picked it up:** ${whys[b.path].replace(/\s*\n+\s*/g, ' ')}`, '');
-    if (thoughts[b.path]) lines.push(thoughts[b.path].split('\n').map((l) => (l ? `> ${l}` : '>')).join('\n'), '');
-    return lines.join('\n');
-  };
-  if (finished.length) out.push('## Finished', '', ...finished.map(entry));
-  if (aside.length) out.push('## Set aside', '', ...aside.map(entry));
-
-  if (topicStats.size) {
-    out.push('## By topic', '', '| Topic | Finished | Set aside | Usefulness |', '| --- | --- | --- | --- |');
-    for (const [t, st] of [...topicStats].sort((a, b) => (b[1].finished + b[1].aside) - (a[1].finished + a[1].aside) || a[0].localeCompare(b[0]))) {
-      out.push(`| ${t} | ${st.finished} | ${st.aside} | ${st.useful.length ? '●'.repeat(Math.round(avgUse(st))) : ''} |`);
-    }
-    out.push('');
-  }
-  if (still.length) out.push('## Still reading', '', ...still.map(bookLine), '');
-  if (!closed.length && !still.length) out.push(`Nothing finished or set aside in ${y} yet.`, '');
-  return out.join('\n');
+  r.months = { label: 'Books finished or set aside', values: months, secondary: null };
+  const item = (b) => ({
+    title: b.title, author: b.author, cover: b.cover, date: b.ended,
+    link: b.link, linkLabel: b.link ? linkLabel(b.link) : '',
+    meta: [`${b.status === 'finished' ? 'finished' : 'set aside'} ${rDate(b.ended)}`, days(b) != null && rPlural(days(b), 'day'),
+      b.useful && USEFUL_LABEL[b.useful], b.topics.join(', ')].filter(Boolean),
+    fields: [{ label: 'Why I picked it up', text: whys[b.path] || '' }],
+    quote: thoughts[b.path] || '',
+    tags: [b.status === 'finished' ? 'Finished' : 'Set aside', ...(b.useful ? [USEFUL_LABEL[b.useful]] : []), ...b.topics],
+  });
+  r.sections = [{ heading: 'Finished', items: finished.map(item) }, { heading: 'Set aside', items: aside.map(item) }];
+  r.tables.push({ heading: 'By topic', columns: ['Topic', 'Finished', 'Set aside', 'Usefulness'],
+    rows: [...topicStats].sort((a, b) => (b[1].finished + b[1].aside) - (a[1].finished + a[1].aside) || a[0].localeCompare(b[0]))
+      .map(([t, st]) => [t, st.finished, st.aside, st.useful.length ? '●'.repeat(Math.round(avgUse(st))) : '']) });
+  r.tables.push({ heading: 'Still reading', columns: ['Title', 'Author', 'Started'], rows: still.map((b) => [b.title, b.author, rDate(b.started)]) });
+  return r;
 }
+
+function exportYear(books, thoughts, year, whys) { return renderReportMarkdown(buildYearReport(books, thoughts, year, whys)); }
 
 const ALL_COLUMNS = ['Title', 'Author', 'Status', 'Useful', 'Topics', 'Related', 'Started', 'Last touched', 'Ended', 'Link', 'Cover', 'Final thoughts'];
 
@@ -800,7 +885,9 @@ class InTheMarginsPlugin extends Plugin {
         const thoughts = await this.readThoughts(books);
         const whys = {};
         for (const b of books) if (b.ended && b.ended.startsWith(year)) whys[b.path] = getWhy(await this.app.vault.cachedRead(b.file));
-        const f = await this.writeFile(`${folder}/${year} in the margins.md`, exportYear(books, thoughts, year, whys));
+        const report = buildYearReport(books, thoughts, year, whys);
+        const f = await this.writeFile(`${folder}/${year} in the margins.md`, renderReportMarkdown(report));
+        await this.writeFile(`${folder}/${year} in the margins.json`, JSON.stringify(report, null, 2));
         this.openFile(f);
       }).open();
     }
@@ -1564,6 +1651,6 @@ module.exports.default = InTheMarginsPlugin;
 module.exports.helpers = {
   todayStr, toDateStr, daysBetween, stripLink, toList, normStatus, normUseful, bookFromFrontmatter,
   ageOf, stateOf, ageLabel, suggestionsFor, connectedBooks, extractFinalThoughts, appendFinalThoughts, cleanThoughts, getWhy, setWhy,
-  safeFileName, buildBookNote, buildTopicNote, exportInProgress, exportSinceLast, exportYear,
+  safeFileName, buildBookNote, buildTopicNote, exportInProgress, exportSinceLast, exportYear, buildYearReport, renderReportMarkdown,
   exportAllMarkdown, exportAllCsv, buildCanvas, DEFAULT_SETTINGS,
 };
